@@ -85,12 +85,14 @@ class RecordsServiceTest {
         when(repository.findByIdWithLock(afterId)).thenReturn(Optional.of(afterRecord));
         when(repository.findByIdWithLock(beforeId)).thenReturn(Optional.of(beforeRecord));
         when(repository.existsByPosition(1.5)).thenReturn(false);
+        when(repository.updatePositionSafely(eq(itemId), anyDouble(), eq(afterId), eq(afterRecord.getPosition()), eq(beforeId), eq(beforeRecord.getPosition())))
+                .thenReturn(1);
 
         // Act
         recordsService.moveItemBetween(itemId, afterId, beforeId);
 
         // Assert
-        verify(repository).updatePosition(itemId, 1.5);
+        verify(repository).updatePositionSafely(eq(itemId), eq(1.5), eq(afterId), eq(afterRecord.getPosition()), eq(beforeId), eq(beforeRecord.getPosition()));
     }
 
     @Test
@@ -134,12 +136,24 @@ class RecordsServiceTest {
         when(repository.findByIdWithLock(afterId)).thenReturn(Optional.of(afterRecord));
         when(repository.findByIdWithLock(beforeId)).thenReturn(Optional.of(tightBeforeRecord));
         when(repository.existsByPosition(1.0000000005)).thenReturn(false);
+        when(repository.updatePositionSafely(any(), anyDouble(), any(), anyDouble(), any(), anyDouble())).thenReturn(1);
 
         // Act
         recordsService.moveItemBetween(itemId, afterId, beforeId);
 
         // Assert
         verify(repository).findAndLockNextItemsById(any(), any(), any());
+    }
+
+    @Test
+    void moveItemBetween_shouldThrowWhenSafeUpdateFails() {
+        when(repository.findByIdWithLock(itemId)).thenReturn(Optional.of(movableRecord));
+        when(repository.findByIdWithLock(afterId)).thenReturn(Optional.of(afterRecord));
+        when(repository.findByIdWithLock(beforeId)).thenReturn(Optional.of(beforeRecord));
+        when(repository.existsByPosition(1.5)).thenReturn(false);
+        when(repository.updatePositionSafely(any(), anyDouble(), any(), anyDouble(), any(), anyDouble())).thenReturn(0);
+
+        assertThrows(ConcurrentModificationException.class, () -> recordsService.moveItemBetween(itemId, afterId, beforeId));
     }
 
     @Test

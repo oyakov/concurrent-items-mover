@@ -42,20 +42,30 @@ public class RecordsService {
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 50), retryFor = ConcurrentModificationException.class)
     @Transactional(isolation = Isolation.REPEATABLE_READ)
     public void moveItemBetween(UUID itemId, UUID afterId, UUID beforeId) {
-        // Блокируем перемещаемый элемент и соседей
-        MovableRecord itemToMove = repository.findByIdWithLock(itemId).orElseThrow(() -> new EntityNotFoundException("Item not found"));
+        repository.findByIdWithLock(itemId)
+                .orElseThrow(() -> new EntityNotFoundException("Item not found"));
 
-        NeighborPositions neighborPositions = getNeighborPositions(afterId, beforeId);
+        NeighborContext neighborContext = getNeighborContext(afterId, beforeId);
 
-        Double newPosition = findAvailablePosition(neighborPositions.afterPos, neighborPositions.beforePos);
+        Double newPosition = findAvailablePosition(neighborContext.afterPos(), neighborContext.beforePos());
 
-        //  Проверяем, что позиция свободна (дополнительная защита)
+        neighborContext = refreshNeighborContext(neighborContext);
+
         if (repository.existsByPosition(newPosition)) {
             throw new ConcurrentModificationException("Position was occupied after calculation");
         }
 
-        //  Атомарное обновление с проверкой
-        repository.updatePosition(itemId, newPosition);
+        int updated = repository.updatePositionSafely(
+                itemId,
+                newPosition,
+                neighborContext.afterId(),
+                neighborContext.afterPos(),
+                neighborContext.beforeId(),
+                neighborContext.beforePos());
+
+        if (updated == 0) {
+            throw new ConcurrentModificationException("Unable to update position due to concurrent changes");
+        }
     }
 
     // Рекурсивный поиск доступной позиции
@@ -86,10 +96,16 @@ public class RecordsService {
         double existingGap = beforePos - afterPos;
         double shiftAmount = requiredGap - existingGap;
 
+        if (shiftAmount <= 0) {
+            return afterPos + (beforePos - afterPos) / 2;
+        }
+
         // Пакетный сдвиг с блокировками
         shift500ItemsInBatches(beforePos, shiftAmount);
 
-        return afterPos + (requiredGap / 2);
+        double widenedBeforePos = beforePos + shiftAmount;
+
+        return afterPos + (widenedBeforePos - afterPos) / 2;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -99,16 +115,48 @@ public class RecordsService {
         repository.saveAll(batch);
     }
 
-    private NeighborPositions getNeighborPositions(UUID afterId, UUID beforeId) {
-        Double afterPos = afterId != null ? repository.findByIdWithLock(afterId).orElseThrow(() -> new EntityNotFoundException("After item not found")).getPosition() : 0;
+    private NeighborContext getNeighborContext(UUID afterId, UUID beforeId) {
+        Double afterPos = null;
+        if (afterId != null) {
+            afterPos = repository.findByIdWithLock(afterId)
+                    .orElseThrow(() -> new EntityNotFoundException("After item not found"))
+                    .getPosition();
+        }
 
-        Double beforePos = beforeId != null ? repository.findByIdWithLock(beforeId).orElseThrow(() -> new EntityNotFoundException("Before item not found")).getPosition() : repository.findMaxPosition() + 100;
+        Double beforePos;
+        if (beforeId != null) {
+            beforePos = repository.findByIdWithLock(beforeId)
+                    .orElseThrow(() -> new EntityNotFoundException("Before item not found"))
+                    .getPosition();
+        } else {
+            Double maxPosition = repository.findMaxPosition();
+            beforePos = (maxPosition != null ? maxPosition : 0.0) + 100;
+        }
 
-        return new NeighborPositions(afterPos, beforePos);
+        double afterPositionValue = afterPos != null ? afterPos : 0.0;
+
+        return new NeighborContext(afterId, afterPositionValue, beforeId, beforePos);
+    }
+
+    private NeighborContext refreshNeighborContext(NeighborContext context) {
+        Double refreshedAfterPos = context.afterPos();
+        if (context.afterId() != null) {
+            refreshedAfterPos = repository.findByIdWithLock(context.afterId())
+                    .orElseThrow(() -> new EntityNotFoundException("After item not found"))
+                    .getPosition();
+        }
+
+        Double refreshedBeforePos = context.beforePos();
+        if (context.beforeId() != null) {
+            refreshedBeforePos = repository.findByIdWithLock(context.beforeId())
+                    .orElseThrow(() -> new EntityNotFoundException("Before item not found"))
+                    .getPosition();
+        }
+
+        return new NeighborContext(context.afterId(), refreshedAfterPos, context.beforeId(), refreshedBeforePos);
     }
 
 
-    //Рекорд для хранения позиций между которых перемещаем для удобства
-    private record NeighborPositions(Double afterPos, Double beforePos) {
+    private record NeighborContext(UUID afterId, Double afterPos, UUID beforeId, Double beforePos) {
     }
 }
