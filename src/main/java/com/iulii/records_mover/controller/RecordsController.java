@@ -26,6 +26,18 @@ public class RecordsController {
             @RequestParam(required = false) UUID after,
             @RequestParam(required = false) UUID before) {
 
+        if (after == null && before == null) {
+            throw new IllegalArgumentException("Either 'after' or 'before' parameter must be provided");
+        }
+
+        if ((after != null && after.equals(id)) || (before != null && before.equals(id))) {
+            throw new IllegalArgumentException("Item cannot be moved relative to itself");
+        }
+
+        if (after != null && before != null && after.equals(before)) {
+            throw new IllegalArgumentException("'after' and 'before' cannot reference the same item");
+        }
+
         service.moveItemBetween(id, after, before);
         return ResponseEntity.ok().build();
     }
@@ -35,5 +47,14 @@ public class RecordsController {
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size) {
 
-        return service.getRecords(page, size);}
+        if (page < 0) {
+            throw new IllegalArgumentException("Page index must not be negative");
+        }
+
+        if (size <= 0 || size > 500) {
+            throw new IllegalArgumentException("Size must be between 1 and 500");
+        }
+
+        return service.getRecords(page, size);
+    }
 }
